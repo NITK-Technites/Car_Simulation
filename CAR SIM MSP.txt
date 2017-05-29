@@ -1,0 +1,320 @@
+
+#include <msp430.h>
+
+#define NUM_BYTES_TX 2                         // How many bytes?
+#define NUM_BYTES_RX 6
+
+int RXByteCtr, RPT_Flag = 0;                // enables repeated start when 1
+volatile unsigned char RxBuffer[6];       // Allocate 128 byte of RAM
+unsigned char *PTxData;                     // Pointer to TX data
+unsigned char *PRxData;                     // Pointer to RX data
+unsigned char TXByteCtr, RX = 0;
+unsigned char MSData[3];
+int x,y,z,i,c[5];
+//======ULTRASONIC VARIABLES============//
+int g,k;
+long int width_l,sensor1,sensor2;
+//==================================//
+
+void Setup_TX(void);
+void Setup_RX(void);
+void Transmit(unsigned char, unsigned char);
+void Receive(void);
+
+//==================== (UART Codes) =====================================================//
+//------------------------------------------------------------------------------------------------------------------------//
+
+void serialInit()
+{
+	P1SEL |= BIT1 + BIT2; //P1.1 = RXD P1.2=TXD
+	P1SEL2 |= BIT1 +BIT2; // P1.1=RXD & P1.2=TXD
+	UCA0CTL1|= UCSSEL_2; // SMCLK
+	UCA0BR0=104; // BAUDRATE AT 1 MHz 9600
+	UCA0BR1=0;//1MHz 9600
+    UCA0MCTL= UCBRS0; // MODULATION UCBRSx=1
+    UCA0CTL1&=~UCSWRST; // ** INITIALIZE USCI STATE MACHINE
+    IE2|= UCA0RXIE; // ENABLE VSCI_A0 RX INTERRUPT
+
+    return;
+}
+
+//------------------------------------------------------------------------------------------------------------------------//
+
+unsigned char serialRead()
+{
+	while(!(IFG2&UCA0RXIFG));   //USCI_A0 RX buffer ready ?
+	return UCA0RXBUF;
+
+}
+
+//------------------------------------------------------------------------------------------------------------------------//
+
+void serialWrite(unsigned char c)
+{
+	while(!(IFG2&UCA0TXIFG));  // USCI_A0 TX buffer ready ?
+	UCA0TXBUF=c; // TX
+
+	return;
+}
+
+//------------------------------------------------------------------------------------------------------------------------//
+
+void serialwriteString(const char *str)
+{
+	while(*str)
+		serialWrite(*str++);
+
+return;
+}
+
+void serial_write_data(unsigned int v)
+{
+
+	for(i=0;i<5;i++)
+	{
+		c[i]=v%10;
+		v=v/10;
+	}
+
+	serialWrite(c[4]+48);
+	serialWrite(c[3] +48);
+	serialWrite(c[2] +48);
+	serialWrite(c[1] + 48);
+	serialWrite(c[0] + 48);
+
+	serialWrite(' ');
+	serialWrite('\n');
+
+	return;
+
+}
+//================================== (ULTRASONIC FUNCTIONS) ===========================//
+void trigger (int x);
+void get_width_l(int x);
+
+void get_width_l(int x)                                                        //Gets Distance from sensor
+{
+  trigger(x);
+  if(x==1){
+  while((P1IN & BIT5) !=BIT5)
+  {
+	  k++;
+	  if(k==5000)
+	  {  k=0; return; }
+  }
+  while((P1IN & BIT5)==BIT5)
+  {
+	  width_l++;
+
+  }
+   
+  sensor1=width_l;
+  }
+  else 
+  {
+    while((P2IN & BIT0) !=BIT0)
+  {
+	  k++;
+	  if(k==5000)
+	  {  k=0; return; }
+  }
+  while((P2IN & BIT0)==BIT0)
+  {
+	  width_l++;
+
+  }
+  sensor2 = width_l;
+  }  
+  
+  return;
+}
+
+void trigger (int x)                                                            // Triggering HCSR04
+{
+  if(x==1){ 
+    P1OUT |=BIT3 ;
+    for(g=0;g<=1500;g++);                                                           //delay of 15 micro seconds
+    P1OUT &=~(BIT3);                                                               
+  }
+  else{
+   P1OUT |=BIT4 ;
+        for(g=0;g<=1500;g++);                                                           //delay of 15 micro seconds
+        P1OUT &=~(BIT4);
+  
+  }
+  return;
+ }
+
+
+
+//======================================================================================//
+
+int main(void)
+{
+  WDTCTL = WDTPW + WDTHOLD;                 // Stop WDT
+  BCSCTL1 = CALBC1_1MHZ;
+  DCOCTL = CALDCO_1MHZ;
+  P1DIR |= BIT3 +BIT4 ;                     //P1.3(sensor1) and P1.4(sensor2) triggers for ultrasonic
+  //Echo Pins for ultrasonic -p1.5 (sensor1) & p2.0(sensor2)
+  P1OUT &= 0X0;
+  P2OUT &= 0x0;
+  P1SEL |= BIT6 + BIT7;                     // Assign I2C pins to USCI_B0
+  P1SEL2|= BIT6 + BIT7;                     // Assign I2C pins to USCI_B0
+  
+  
+  //======================( Initital Setup )=======================================================//
+  serialInit();
+  
+  Setup_TX();
+  RPT_Flag = 1;
+  Transmit(0x2D,0x00);
+  while (UCB0CTL1 & UCTXSTP);             // Ensure stop condition got sent
+  
+  Setup_TX();
+  RPT_Flag = 1;
+  Transmit(0x2D,0x10);
+  while (UCB0CTL1 & UCTXSTP);             // Ensure stop condition got sent
+
+  Setup_TX();
+  RPT_Flag = 1;
+  Transmit(0x2D,0x08);
+  while (UCB0CTL1 & UCTXSTP);             // Ensure stop condition got sent
+  
+  Setup_TX();
+  RPT_Flag = 1;
+  Transmit(0x31,0x03);                 // Range Select at add 0x31 write {0x00 for 2g(default)}{0x01 for 4g}{0x02 for 8g}{0x03 for 16g}
+  while (UCB0CTL1 & UCTXSTP);         // Ensure stop condition got sent
+
+//=================================================================================================//  
+  
+  while(1){
+    
+  //Transmit process
+  Setup_TX();
+  RPT_Flag = 1;
+  Transmit(0x32,0xFE);
+  while (UCB0CTL1 & UCTXSTP);             // Ensure stop condition got sent
+  
+  //Receive process
+  Setup_RX();
+  Receive();
+  while (UCB0CTL1 & UCTXSTP);             // Ensure stop condition got sent
+  
+  x = (((int)RxBuffer[1]) << 8) | RxBuffer[0];
+  //x+=256;
+  y = (((int)RxBuffer[3]) << 8) | RxBuffer[2];
+  //y+=256;
+  z = (((int)RxBuffer[5]) << 8) | RxBuffer[4];
+  //z+=256;
+  serialwriteString("\033[2J");   // clear screen
+ serialwriteString("\033[0;0H"); // set cursor to 0,0
+ serialwriteString("X Axis:"); 
+ serial_write_data(x);
+ serialwriteString("Y Axis:");
+  serial_write_data(y);
+ serialwriteString("Z Axis:");
+ serial_write_data(z);
+
+get_width_l(1);
+width_l=0;
+get_width_l(2);
+width_l=0;
+serialwriteString("Sensor1:");
+serial_write_data(sensor1);
+serialwriteString("Sensor2:");
+serial_write_data(sensor2);
+__delay_cycles(500000);
+  }
+}
+
+//-------------------------------------------------------------------------------
+// The USCI_B0 data ISR is used to move received data from the I2C slave
+// to the MSP430 memory. It is structured such that it can be used to receive
+// any 2+ number of bytes by pre-loading RXByteCtr with the byte count.
+//-------------------------------------------------------------------------------
+#pragma vector = USCIAB0TX_VECTOR
+__interrupt void USCIAB0TX_ISR(void)
+{
+  if(RX == 1){                              // Master Recieve?
+  RXByteCtr--;                              // Decrement RX byte counter
+  if (RXByteCtr)
+  {
+    *PRxData++ = UCB0RXBUF;                 // Move RX data to address PRxData
+  }
+  else
+  {
+    if(RPT_Flag == 0)
+        UCB0CTL1 |= UCTXSTP;                // No Repeated Start: stop condition
+      if(RPT_Flag == 1){                    // if Repeated Start: do nothing
+        RPT_Flag = 0;
+      }
+    *PRxData = UCB0RXBUF;                   // Move final RX data to PRxData
+    __bic_SR_register_on_exit(CPUOFF);      // Exit LPM0
+  }}
+  
+  else{                                     // Master Transmit
+      if (TXByteCtr)                        // Check TX byte counter
+  {
+    UCB0TXBUF = MSData[TXByteCtr];                   // Load TX buffer
+    TXByteCtr--;                            // Decrement TX byte counter
+  }
+  else
+  {
+    if(RPT_Flag == 1){
+    RPT_Flag = 0;
+    TXByteCtr = NUM_BYTES_TX;                  // Load TX byte counter
+    __bic_SR_register_on_exit(CPUOFF);
+    }
+    else{
+    UCB0CTL1 |= UCTXSTP;                    // I2C stop condition
+    IFG2 &= ~UCB0TXIFG;                     // Clear USCI_B0 TX int flag
+    __bic_SR_register_on_exit(CPUOFF);      // Exit LPM0
+    }
+  }
+ }
+  
+}
+
+void Setup_TX(void){
+  _DINT();
+  RX = 0;
+  IE2 &= ~UCB0RXIE;  
+  while (UCB0CTL1 & UCTXSTP);               // Ensure stop condition got sent// Disable RX interrupt
+  UCB0CTL1 |= UCSWRST;                      // Enable SW reset
+  UCB0CTL0 = UCMST + UCMODE_3 + UCSYNC;     // I2C Master, synchronous mode
+  UCB0CTL1 = UCSSEL_2 + UCSWRST;            // Use SMCLK, keep SW reset
+  UCB0BR0 = 12;                             // fSCL = SMCLK/12 = ~100kHz
+  UCB0BR1 = 0;
+  UCB0I2CSA = 0x53;                         // Slave Address is 048h
+  UCB0CTL1 &= ~UCSWRST;                     // Clear SW reset, resume operation
+  IE2 |= UCB0TXIE;                          // Enable TX interrupt
+}
+void Setup_RX(void){
+  _DINT();
+  RX = 1;
+  IE2 &= ~UCB0TXIE;  
+  UCB0CTL1 |= UCSWRST;                      // Enable SW reset
+  UCB0CTL0 = UCMST + UCMODE_3 + UCSYNC;     // I2C Master, synchronous mode
+  UCB0CTL1 = UCSSEL_2 + UCSWRST;            // Use SMCLK, keep SW reset
+  UCB0BR0 = 12;                             // fSCL = SMCLK/12 = ~100kHz
+  UCB0BR1 = 0;
+  UCB0I2CSA = 0x53;                         // Slave Address is 048h
+  UCB0CTL1 &= ~UCSWRST;                     // Clear SW reset, resume operation
+  IE2 |= UCB0RXIE;                          // Enable RX interrupt
+}
+void Transmit(unsigned char Addr, unsigned char Data){
+    MSData[2] = Addr;                      // TX array start address
+    MSData[1]= Data;
+	TXByteCtr = NUM_BYTES_TX;                  // Load TX byte counter
+    while (UCB0CTL1 & UCTXSTP);             // Ensure stop condition got sent
+    UCB0CTL1 |= UCTR + UCTXSTT;             // I2C TX, start condition
+    __bis_SR_register(CPUOFF + GIE);        // Enter LPM0 w/ interrupts
+}
+void Receive(void){
+    PRxData = (unsigned char *)RxBuffer;    // Start of RX buffer
+    RXByteCtr = NUM_BYTES_RX-1;              // Load RX byte counter
+    while (UCB0CTL1 & UCTXSTP);             // Ensure stop condition got sent
+    UCB0CTL1 |= UCTXSTT;                    // I2C start condition
+    __bis_SR_register(CPUOFF + GIE);        // Enter LPM0 w/ interrupts
+}
+
